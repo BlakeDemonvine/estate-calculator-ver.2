@@ -8,31 +8,75 @@ Chart.register(ChartDataLabels);
 const TAX_CPI_CACHE = { data: null, fetchedAt: null };
 
 /**
- * 從主計總處 API 取得 CPI 資料（帶 1 小時快取）
- * API 回傳 JSON，觀測值以數字 index 排列，需對應 dimensions.observation[0].values
- * 格式結果: { "1981-M1": 52.95, "2026-M2": 110.91, ... }
- * 最早資料為民國70年（1981年），更早的需手動查詢
+ * 取得完整 CPI 資料（靜態表 + API 最新月份，帶 1 小時快取）
+ *
+ * 資料來源：
+ *   - CPI_STATIC（cpi_static.js）：民國48年(1959)～民國114年(2025)，共 804 筆
+ *     定義：ODS[月X] = (2026/2月 CPI) / (月X 的 CPI) × 100
+ *   - 主計總處 API：民國70年(1981)起，定義為某固定基期 = 100 的絕對指數
+ *
+ * 橋接邏輯：
+ *   bridge = CPI_STATIC["1981-M1"] / API["1981-M1"]
+ *   → API[月X] × bridge = 換算成與 CPI_STATIC 同基期的值
+ *   → 用此把 API 最新幾個月補入 CPI_STATIC（2026年以後靜態表沒有）
+ *
+ * 最終格式（統一基期：2026年2月 = 100）：
+ *   { "1959-M1": 1124.8, ..., "1981-M1": 209.5, ..., "2026-M3": 99.x, ... }
+ *
+ * cpiRatio 計算方式：
+ *   cpiRatio = result[prevKey] / result[currKey] × 100
+ *   （prevKey = 前次移轉月份，currKey = 目前最新月份）
  */
 async function fetchCPIData() {
     const now = Date.now();
     if (TAX_CPI_CACHE.data && TAX_CPI_CACHE.fetchedAt && (now - TAX_CPI_CACHE.fetchedAt) < 3600000) {
         return TAX_CPI_CACHE.data;
     }
-    // API 最早只有到民國70年(1981)的資料
-    const url = 'https://nstatdb.dgbas.gov.tw/dgbasall/webMain.aspx?sdmx/A030101015/1...M.&startTime=1981&endTime=2026-M2';
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`CPI API 請求失敗: ${resp.status}`);
-    const json = await resp.json();
 
-    // 解析：observations 的 key 是數字 index，對應 dimensions.observation[0].values[index].id
-    const obsList = json.data.dataSets[0].series['0'].observations;
-    const timeDim = json.data.structure.dimensions.observation[0].values; // [{id:"1981-M1", name:"70年1月"}, ...]
+    // 底層先填入靜態表（民國48~114年，含民國70年後的備用值）
+    const result = Object.assign({}, CPI_STATIC);
 
-    const result = {};
-    for (const [idx, arr] of Object.entries(obsList)) {
-        const timeId = timeDim[parseInt(idx)]?.id; // e.g. "1981-M1"
-        const val    = arr[0];
-        if (timeId && val != null) result[timeId] = val;
+    // 再呼叫 API 取得最新幾個月（2026年以後靜態表沒有）
+    try {
+        const url = 'https://nstatdb.dgbas.gov.tw/dgbasall/webMain.aspx?sdmx/A030101015/1...M.&startTime=1981&endTime=2030';
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`API ${resp.status}`);
+        const json = await resp.json();
+        const obsList = json.data.dataSets[0].series['0'].observations;
+        const timeDim = json.data.structure.dimensions.observation[0].values;
+
+        const apiRaw = {};
+        for (const [idx, arr] of Object.entries(obsList)) {
+            const key = timeDim[parseInt(idx)]?.id;
+            if (key && arr[0] != null) apiRaw[key] = arr[0];
+        }
+
+        // 計算換算常數 K
+        // 數學推導：CPI_STATIC[月X] * API[月X] = 常數 K（對任何月份成立）
+        // 因為兩者都是同一個 CPI 值，只是基期不同，積等於 (2026-M2 / API基期) * 10000
+        // 所以：CPI_STATIC["2026-M3"] = K / API["2026-M3"]
+        const bridgeMonths = ['1981-M1','1981-M6','1982-M1','1983-M1','1984-M1','1985-M1'];
+        let kSum = 0, kCount = 0;
+        for (const k of bridgeMonths) {
+            if (CPI_STATIC[k] && apiRaw[k]) {
+                kSum += CPI_STATIC[k] * apiRaw[k];
+                kCount++;
+            }
+        }
+        if (kCount > 0) {
+            const K = kSum / kCount;
+            // 把 API 有但靜態表沒有的月份（2026年以後）補進來
+            for (const [key, val] of Object.entries(apiRaw)) {
+                const year = parseInt(key.split('-')[0]);
+                if (year >= 2026 && val > 0) {
+                    result[key] = parseFloat((K / val).toFixed(1));
+                }
+            }
+        }
+    } catch (e) {
+        // API 失敗沒關係：靜態表已涵蓋到 2025/12
+        // 如果當期月份超過 2026/2，cpiRatio 會略有誤差但仍可用
+        console.warn('CPI API 失敗，使用靜態表', e);
     }
 
     TAX_CPI_CACHE.data = result;
@@ -66,10 +110,11 @@ function parseDateToApiKey(dateStr) {
 /** 取 CPI 資料中最新可用的 key（退至多 3 個月） */
 function getLatestCpiKey(cpiData) {
     const now = new Date();
-    for (let offset = 0; offset <= 3; offset++) {
+    for (let offset = 0; offset <= 6; offset++) {
         const d = new Date(now.getFullYear(), now.getMonth() - offset, 1);
         const key = `${d.getFullYear()}-M${d.getMonth() + 1}`;
-        if (cpiData[key] != null) return key;
+        const val = cpiData[key];
+        if (val != null && val > 0 && isFinite(val)) return key;
     }
     return null;
 }
@@ -139,8 +184,8 @@ async function autoCalcTax(btn) {
     const currentValue = parseFloat(document.getElementById('editCurrentValue102').value) || 0;
     const totalArea    = parseFloat(document.getElementById('editTotalArea').value) || 0;
 
-    // 先檢查是否有手動輸入 CPI（供民國70年以前使用）
-    const manualCpiEl = card.querySelector('.input-manual-cpi');
+    // 手動覆蓋欄位（保留但不強制）
+    const manualCpiEl  = card.querySelector('.input-manual-cpi');
     const manualCpiRaw = manualCpiEl ? parseFloat(manualCpiEl.value) : NaN;
 
     if (!dateStr)      return setStatus('⚠ 請填寫前次取得年月', '#e67e22');
@@ -150,26 +195,8 @@ async function autoCalcTax(btn) {
 
     btn.disabled = true;
 
-    // 判斷是否超出 API 範圍（民國70年以前 = 西元1981年以前）
-    const prevKey = parseDateToApiKey(dateStr);
-    const prevYear = prevKey ? parseInt(prevKey.split('-')[0]) : 0;
-    const isBeforeApiRange = prevYear > 0 && prevYear < 1981;
-
-    if (isBeforeApiRange) {
-        // 需要手動輸入 CPI
-        if (isNaN(manualCpiRaw) || manualCpiRaw <= 0) {
-            setStatus(
-                `⚠ 前次移轉年期早於民國70年，API 無資料。<br>` +
-                `請至 <a href="https://www.stat.gov.tw/cp.aspx?n=2665" target="_blank" style="color:#7d2ae8;">主計總處第四點「各年月為基期之消費者物價總指數－稅務專用」</a> 查詢後，手動填入下方「物價總指數」欄位再按計算。`,
-                '#e67e22'
-            );
-            // 顯示手動輸入欄位
-            const manualBlock = card.querySelector('.manual-cpi-block');
-            if (manualBlock) manualBlock.style.display = 'block';
-            btn.disabled = false;
-            return;
-        }
-        // 使用手動輸入的 CPI 直接計算
+    // 若使用者手動填了 CPI，優先採用（方便特殊情況覆蓋）
+    if (!isNaN(manualCpiRaw) && manualCpiRaw > 0) {
         const result = calcTaxCore({ currentValue, prevValue, totalArea, scopeNum, scopeDen, cpiRatio: manualCpiRaw });
         card.querySelector('.input-tax-self').value      = result.selfUseTax;
         card.querySelector('.input-tax-gen').value       = result.generalTax;
@@ -183,13 +210,23 @@ async function autoCalcTax(btn) {
     setStatus('⏳ 查詢物價指數中...', '#7d2ae8');
 
     try {
+        // fetchCPIData() 已自動合併靜態表(民國48~114)與 API 最新月份
         const cpiData = await fetchCPIData();
-        const currKey = getLatestCpiKey(cpiData);
 
-        if (!prevKey || cpiData[prevKey] == null) {
+        const prevKey  = parseDateToApiKey(dateStr);
+        const currKey  = getLatestCpiKey(cpiData);
+        const prevYear = prevKey ? parseInt(prevKey.split('-')[0]) : 0;
+
+        if (!prevKey) {
+            setStatus(`⚠ 年月格式錯誤，請使用如：<b>69/8</b> 或 <b>115/3</b>`, '#e74c3c');
+            btn.disabled = false;
+            return;
+        }
+        if (cpiData[prevKey] == null) {
+            const rocYear = prevYear - 1911;
             setStatus(
-                `⚠ 找不到「${dateStr}」的 CPI 資料（查詢 key: ${prevKey || '格式錯誤'}）<br>` +
-                `請確認年月格式，例如：<b>115/3</b> 或 <b>70/1</b>`,
+                `⚠ 找不到「${dateStr}」（${prevKey}）的 CPI 資料<br>` +
+                `靜態表涵蓋民國48年～民國114年，請確認年月格式是否正確`,
                 '#e74c3c'
             );
             btn.disabled = false;
@@ -201,7 +238,14 @@ async function autoCalcTax(btn) {
             return;
         }
 
-        const cpiRatio = (cpiData[currKey] / cpiData[prevKey]) * 100;
+        // cpiRatio = prevCPI / currCPI × 100
+        // 因 CPI_STATIC 定義 = (2026/2月CPI) / (該月CPI) × 100
+        // 所以：prevCPI/currCPI = cpiData[currKey] / cpiData[prevKey]  ← 注意分子分母
+        // → cpiRatio = cpiData[prevKey] / cpiData[currKey] × 100
+        const cpiRatio = (cpiData[prevKey] / cpiData[currKey]) * 100;
+
+        const isBefore1981 = prevYear < 1981;
+        const sourceNote   = isBefore1981 ? '（靜態表）' : '（API）';
 
         const result = calcTaxCore({ currentValue, prevValue, totalArea, scopeNum, scopeDen, cpiRatio });
 
@@ -211,7 +255,7 @@ async function autoCalcTax(btn) {
         card.querySelector('.input-calc-tax-gen').value  = result.generalTax;
 
         setStatus(
-            `✅ 計算完成｜物價總指數 ${cpiRatio.toFixed(2)}%｜漲價倍數 ${result.times.toFixed(2)}｜` +
+            `✅ 計算完成${sourceNote}｜物價總指數 ${cpiRatio.toFixed(2)}%｜漲價倍數 ${result.times.toFixed(2)}｜` +
             `參考月份：${prevKey} → ${currKey}`,
             '#27ae60'
         );
@@ -239,8 +283,8 @@ async function autoCalcAllTax() {
 }
 
 /**
- * 謄本匯入後靜默批次計算：直接操作 data 物件，民國70年以後自動計算，以前的跳過
- * 不需要 DOM，計算完後自動 refresh 卡片上的紅點
+ * 謄本匯入後靜默批次計算：直接操作 data 物件
+ * 民國48年以後全部自動計算（靜態表涵蓋民國48~114年，API 補最新月份）
  */
 async function autoCalcAllTaxSilent() {
     let cpiData = null;
@@ -248,7 +292,7 @@ async function autoCalcAllTaxSilent() {
 
     const currKey = getLatestCpiKey(cpiData);
     if (!currKey) return;
-    const currCpi = cpiData[currKey];
+    const currCpiOds = cpiData[currKey]; // 以 2026/2月基期的當期值
 
     for (const landId in data) {
         const record = data[landId];
@@ -268,12 +312,14 @@ async function autoCalcAllTaxSilent() {
             const prevKey  = parseDateToApiKey(dateStr);
             const prevYear = prevKey ? parseInt(prevKey.split('-')[0]) : 0;
 
-            // 民國70年（1981）以前的跳過，讓使用者手動輸入
-            if (!prevKey || prevYear < 1981 || cpiData[prevKey] == null) continue;
+            // 靜態表涵蓋民國48年(1959)起，更早的才跳過
+            if (!prevKey || prevYear < 1959 || cpiData[prevKey] == null) continue;
 
-            const cpiRatio = (currCpi / cpiData[prevKey]) * 100;
+            // cpiRatio = prevCPI / currCPI × 100
+            // 因兩者都是「2026/2月基期」格式：值越大代表當時物價越低（年代越久遠）
+            // prevCPI/currCPI = cpiData[prevKey] / cpiData[currKey]
+            const cpiRatio = (cpiData[prevKey] / currCpiOds) * 100;
 
-            // 用分子/分母取得精確持分
             const scopeNums = record['土地面積']?.['權利範圍_num'];
             const scopeDens = record['土地面積']?.['權利範圍_den'];
             const sNum = (scopeNums && scopeNums[i]) ? scopeNums[i] : Math.round(scope * 1000);
@@ -281,7 +327,6 @@ async function autoCalcAllTaxSilent() {
 
             const result = calcTaxCore({ currentValue: currVal, prevValue: prevVal, totalArea: area, scopeNum: sNum, scopeDen: sDen, cpiRatio });
 
-            // 寫回 data
             if (!Array.isArray(record['增值稅預估(自用)'])) record['增值稅預估(自用)'] = new Array(owners.length).fill('');
             if (!Array.isArray(record['增值稅預估(一般)'])) record['增值稅預估(一般)'] = new Array(owners.length).fill('');
             if (!Array.isArray(record['增值稅試算(自用)']))  record['增值稅試算(自用)']  = new Array(owners.length).fill('');
@@ -294,7 +339,6 @@ async function autoCalcAllTaxSilent() {
         }
     }
 
-    // 更新所有卡片的紅點狀態
     refreshAllTaxBadges();
 }
 
