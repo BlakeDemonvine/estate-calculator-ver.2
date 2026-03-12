@@ -96,6 +96,59 @@
         .dropdown-item .check-icon { font-size: 18px; opacity: 0; }
         .dropdown-item.active .check-icon { opacity: 1; }
 
+        /* ── Export Modal ── */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); display: flex; justify-content: center;
+            align-items: center; z-index: 1000; backdrop-filter: blur(4px);
+        }
+        .modal-content {
+            background: white; width: 700px; max-width: 95%; max-height: 85vh;
+            border-radius: 12px; box-shadow: 0 15px 40px rgba(0,0,0,0.25);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .modal-header {
+            padding: 16px 24px; background: white; border-bottom: 1px solid #eee;
+            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+        }
+        .modal-header h3 { margin: 0; font-size: 18px; color: #333; }
+        .modal-body { padding: 24px; overflow-y: auto; flex: 1; background: #fcfcfc; }
+        .modal-footer {
+            padding: 16px 24px; background: white; border-top: 1px solid #eee;
+            display: flex; justify-content: flex-end; gap: 12px; flex-shrink: 0;
+        }
+        .section-title {
+            font-size: 14px; font-weight: 700; color: #7d2ae8; margin: 20px 0 10px 0;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            border-left: 3px solid #7d2ae8; padding-left: 8px;
+        }
+        .section-title:first-child { margin-top: 0; }
+        .form-group label { display: block; font-size: 13px; font-weight: 500; color: #555; margin-bottom: 6px; }
+        .grid-2-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .pet-btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .btn-spawn-pet {
+            background: #f0f7ff; border: 1px solid #cce5ff; color: #0056b3;
+            padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
+            font-weight: 600; transition: all 0.2s; display: flex; gap: 8px; align-items: center;
+        }
+        .btn-spawn-pet:hover { background: #cce5ff; }
+        .btn-cancel {
+            background: #f1f3f5; color: #495057; border: 1px solid #dee2e6;
+            padding: 10px 24px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.2s;
+        }
+        .btn-cancel:hover { background: #e9ecef; }
+        .btn-save {
+            background: #7d2ae8; color: white; border: 1px solid #7d2ae8;
+            padding: 10px 24px; border-radius: 6px; cursor: pointer; font-weight: 600;
+            box-shadow: 0 2px 5px rgba(125,42,232,0.3); transition: all 0.2s;
+        }
+        .btn-save:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .close-btn {
+            background: transparent; border: none; font-size: 28px; font-weight: bold;
+            color: #aaa; cursor: pointer; line-height: 1; padding: 0 8px;
+        }
+        .close-btn:hover { color: #333; }
+
         /* ★ 網格與卡片樣式修正 (控制 z-index 圖層) */
         .docs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 24px; margin-top: 20px; }
         
@@ -212,6 +265,56 @@
             </div>
         </section>
     </main>
+
+    <!-- ── Export Modal ── -->
+    <div id="exportModal" class="modal-overlay" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-file-export"></i> 進階匯出設定</h3>
+                <button class="close-btn" onclick="closeExportModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <h4 class="section-title">輸出格式</h4>
+                <div style="background:#f8f9fa;padding:15px;border-radius:8px;margin-bottom:20px;">
+                    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                        <input type="checkbox" id="exportPureValue" style="width:18px;height:18px;">
+                        <span style="font-weight:600;color:#333;">純數字版 (不包含 Excel 運算公式，適合手機查看)</span>
+                    </label>
+                </div>
+                <h4 class="section-title">選擇要輸出的工作表 (Sheet)</h4>
+                <div id="sheetSelectGrid" class="pet-btn-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
+                    <label class="btn-spawn-pet"><input type="checkbox" checked value="清冊"> 土地清冊</label>
+                    <label class="btn-spawn-pet"><input type="checkbox" checked value="增值稅歸戶表"> 增值稅歸戶</label>
+                    <label class="btn-spawn-pet"><input type="checkbox" checked value="土地歸戶表"> 土地歸戶</label>
+                    <label class="btn-spawn-pet"><input type="checkbox" checked value="地主可分配面積"> 可分配面積</label>
+                    <label class="btn-spawn-pet"><input type="checkbox" checked value="基本分析"> 基本分析</label>
+                </div>
+                <h4 class="section-title">數據範圍過濾</h4>
+                <div class="grid-2-col" style="margin-bottom:20px;">
+                    <div class="form-group">
+                        <label>過濾模式</label>
+                        <select id="exportFilterType" onchange="toggleExportFilterUI()" style="width:100%;padding:10px;border-radius:6px;border:1px solid #ddd;">
+                            <option value="all">匯出全部數據</option>
+                            <option value="land">僅匯出指定地號</option>
+                            <option value="owner">僅匯出指定所有權人</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="exportFilterValueWrap" style="display:none;">
+                        <label id="exportFilterLabel">請選擇</label>
+                        <select id="exportFilterValue" style="width:100%;padding:10px;border-radius:6px;border:1px solid #ddd;"></select>
+                    </div>
+                </div>
+                <h4 class="section-title">隱藏特定欄位 (僅影響清冊分頁)</h4>
+                <div id="columnToggleGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;font-size:13px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeExportModal()">取消</button>
+                <button class="btn-save" style="background:#1D6F42;border-color:#1D6F42;" onclick="startAdvancedExport()">
+                    <i class="fa-solid fa-file-excel"></i> 開始執行匯出
+                </button>
+            </div>
+        </div>
+    </div>
 
     <script src="excel.js"></script>
     <script>
@@ -510,23 +613,88 @@
             renderDocs();
         }
 
-        // 匯出 Excel
+        // ── 匯出 Excel（開 popup 選項）──
+        let _exportProjectData = null;
+        let _exportProjectBasics = null;
+
         function exportProject(event, id) {
             event.stopPropagation();
             closeAllMenus();
-            
             const projects = getProjects();
             const proj = projects.find(p => p.id === id);
-            if(!proj) return;
+            if (!proj) return;
+            // 暫存要匯出的專案資料
+            _exportProjectData   = proj.data   || {};
+            _exportProjectBasics = proj.basics  || {};
+            openExportModal();
+        }
 
-            window.data = proj.data || {};
-            window.basics = proj.basics || {};
+        function openExportModal() {
+            const modal  = document.getElementById('exportModal');
+            const colGrid = document.getElementById('columnToggleGrid');
+            const columns = {
+                "地段小段":"地段","所有權人":"所有權人","土地面積_m²":"土地面積_m²","土地面積_坪":"土地面積_坪",
+                "權利範圍(土地)":"土地面積_權利範圍","土地持分(坪)":"土地面積_土地持分面積(坪)","總土地比率":"土地面積_總土地比率",
+                "他項權利":"他項權利","前次現值":"前次取得_公告現值","前次年月":"前次取得_年月","當期現值":"當期公告現值",
+                "增值稅(自)":"增值稅預估(自用)","增值稅(般)":"增值稅預估(一般)","建物門牌":"建物門牌","建物持分(坪)":"持分面積_坪",
+                "所有權地址":"所有權地址","電話":"電話"
+            };
+            colGrid.innerHTML = '';
+            for (let name in columns) {
+                colGrid.innerHTML += `<label style="display:flex;gap:5px;cursor:pointer;"><input type="checkbox" checked class="col-toggle" data-key="${columns[name]}"> ${name}</label>`;
+            }
+            // 過濾下拉選項
+            const filterValSelect = document.getElementById('exportFilterValue');
+            filterValSelect.innerHTML = '';
+            document.getElementById('exportFilterType').value = 'all';
+            document.getElementById('exportFilterValueWrap').style.display = 'none';
+            modal.style.display = 'flex';
+        }
 
+        function closeExportModal() {
+            document.getElementById('exportModal').style.display = 'none';
+        }
+
+        function toggleExportFilterUI() {
+            const type   = document.getElementById('exportFilterType').value;
+            const wrap   = document.getElementById('exportFilterValueWrap');
+            const label  = document.getElementById('exportFilterLabel');
+            const select = document.getElementById('exportFilterValue');
+            if (type === 'all') { wrap.style.display = 'none'; return; }
+            wrap.style.display = 'block';
+            select.innerHTML = '';
+            const d = _exportProjectData || {};
+            if (type === 'land') {
+                label.innerText = '請選擇地號';
+                Object.keys(d).forEach(id => { select.innerHTML += `<option value="${id}">${id}</option>`; });
+            } else {
+                label.innerText = '請選擇所有權人';
+                const owners = new Set();
+                for (let id in d) (d[id]['所有權人'] || []).forEach(o => owners.add(o));
+                owners.forEach(o => { select.innerHTML += `<option value="${o}">${o}</option>`; });
+            }
+        }
+
+        function startAdvancedExport() {
+            const selectedSheets = Array.from(document.querySelectorAll('#sheetSelectGrid input:checked')).map(el => el.value);
+            const hiddenCols     = Array.from(document.querySelectorAll('.col-toggle:not(:checked)')).map(el => el.getAttribute('data-key'));
+            const filterConfig   = {
+                type:  document.getElementById('exportFilterType').value,
+                value: document.getElementById('exportFilterValue').value
+            };
+            const isPureValue = document.getElementById('exportPureValue').checked;
+            if (selectedSheets.length === 0) return alert('請至少選擇一個要輸出的工作表');
+
+            // 把專案資料掛到 window，讓 excel.js 能讀到
+            window.data   = _exportProjectData   || {};
+            window.basics = _exportProjectBasics || {};
+
+            closeExportModal();
             try {
-                exportFancyExcel(true); 
-            } catch(err) {
+                exportFancyExcelAdvanced({ isPureValue, selectedSheets, hiddenCols, filterConfig });
+            } catch (err) {
                 console.error(err);
-                alert("匯出過程發生錯誤。");
+                alert('匯出過程發生錯誤：' + err.message);
             }
         }
 
